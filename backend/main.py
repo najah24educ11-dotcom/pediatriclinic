@@ -1,21 +1,32 @@
+import os
+
 from fastapi import FastAPI
 from pydantic import BaseModel
-import mysql.connector
 
-app = FastAPI()
+try:
+    import mysql.connector
+except ImportError:  # pragma: no cover - optional dependency
+    mysql = None
+
+app = FastAPI(title="Pediatric Clinic Management System")
 
 
-# Connect to MySQL database
 def get_db_connection():
-    return mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="",
-        database="pediatric_clinic"
-    )
+    if mysql is None:
+        return None
+
+    try:
+        return mysql.connector.connect(
+            host=os.getenv("MYSQL_HOST", "localhost"),
+            user=os.getenv("MYSQL_USER", "root"),
+            password=os.getenv("MYSQL_PASSWORD", ""),
+            database=os.getenv("MYSQL_DATABASE", "pediatric_clinic"),
+            port=int(os.getenv("MYSQL_PORT", "3306")),
+        )
+    except mysql.connector.Error:
+        return None
 
 
-# Child data
 class Child(BaseModel):
     name: str
     age: int
@@ -26,27 +37,28 @@ class Child(BaseModel):
     diagnosis: str | None = None
 
 
-# Home page
+children_in_memory: list[Child] = []
+
+
 @app.get("/")
 def home():
-    return {
-        "message": "Welcome to Pediatric Clinic Management System"
-    }
+    return {"message": "Welcome to Pediatric Clinic Management System"}
 
 
-# Add a child to the database
 @app.post("/children")
 def add_child(child: Child):
     connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    if connection is None:
+        children_in_memory.append(child)
+        return {"message": "Child added successfully", "child": child.model_dump()}
 
+    cursor = connection.cursor(dictionary=True)
     query = """
         INSERT INTO children
         (name, age, guardian_name, gender,
          doctor_name, appointment_date, diagnosis)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
     """
-
     values = (
         child.name,
         child.age,
@@ -54,31 +66,28 @@ def add_child(child: Child):
         child.gender,
         child.doctor_name,
         child.appointment_date,
-        child.diagnosis
+        child.diagnosis,
     )
 
     try:
         cursor.execute(query, values)
         connection.commit()
-        return {
-            "message": "Child added successfully",
-            "id": cursor.lastrowid
-        }
+        return {"message": "Child added successfully", "id": cursor.lastrowid}
     finally:
         cursor.close()
         connection.close()
 
 
-# Get all children from the database
 @app.get("/children")
 def get_children():
     connection = get_db_connection()
-    cursor = connection.cursor(dictionary=True)
+    if connection is None:
+        return {"children": [child.model_dump() for child in children_in_memory]}
 
+    cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute("SELECT * FROM children")
-        children = cursor.fetchall()
-        return {"children": children}
+        return {"children": cursor.fetchall()}
     finally:
         cursor.close()
         connection.close()
